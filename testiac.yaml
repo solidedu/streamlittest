@@ -7,10 +7,12 @@ Parameters:
     Description: S3 key for the documents to ingest
   LambdaLayerS3BucketName:
     Type: String
-    Description: The S3 bucket storing the lambda layer code
+    Description: The S3 bucket storing the Lambda layer code
+    Default: my-lambda-layers-bucket
   LambdaLayerS3Key:
     Type: String
-    Description: The S3 key for the lambda layer zip file
+    Description: The S3 key for the Lambda layer zip file
+    Default: layers/knowledgebase_layer.zip
 
 Resources:
   # S3 Bucket for Knowledge Base
