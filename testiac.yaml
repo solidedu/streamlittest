@@ -2,31 +2,16 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: Template to deploy RAG solution with AWS Bedrock knowledge base, OpenSearch Serverless, and Streamlit frontend using Lambda
 
 Parameters:
-  KnowledgeBaseBucketName:
-    Type: String
-    Description: Name of the S3 bucket to store the knowledge base
-  CollectionId:
-    Type: String
-    Description: ID of the OpenSearch Serverless collection
-  VectorStoreName:
-    Type: String
-    Description: Name of the vector store
   DocumentS3Key:
     Type: String
     Description: S3 key for the documents to ingest
-  KnowledgeBaseID:
-    Type: String
-    Description: The Bedrock Knowledge base ID
-  LambdaLayerS3BucketName:
-    Type: String
-    Description: The S3 bucket storing lambda layer code
 
 Resources:
   # S3 Bucket for Knowledge Base
   KnowledgeBaseBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Ref KnowledgeBaseBucketName
+      BucketName: !Sub 'knowledge-base-bucket-${AWS::StackName}'
 
   # IAM Role for Bedrock Execution
   BedrockExecutionRole:
@@ -57,28 +42,13 @@ Resources:
                   - s3:GetObject
                   - s3:ListBucket
                 Resource:
-                  - !Sub 'arn:aws:s3:::${KnowledgeBaseBucketName}'
-                  - !Sub 'arn:aws:s3:::${KnowledgeBaseBucketName}/*'
+                  - !Sub 'arn:aws:s3:::${KnowledgeBaseBucket}'
+                  - !Sub 'arn:aws:s3:::${KnowledgeBaseBucket}/*'
                 Condition:
                   StringEquals:
                     aws:ResourceAccount: !Sub '${AWS::AccountId}'
 
-  # IAM Policy for OpenSearch Serverless Access
-  OSSPolicy:
-    Type: AWS::IAM::Policy
-    Properties:
-      PolicyName: !Sub 'AmazonBedrockOSSPolicyForKnowledgeBase-${AWS::StackName}'
-      PolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Action:
-              - aoss:APIAccessAll
-            Resource: !Sub 'arn:aws:aoss:${AWS::Region}:${AWS::AccountId}:collection/${CollectionId}'
-      Roles:
-        - !Ref BedrockExecutionRole
-
-  # Lambda Execution Role for Knowledge Base and Streamlit
+  # IAM Role for Lambda Functions
   LambdaExecutionRoleForKnowledgeBase:
     Type: AWS::IAM::Role
     Properties:
@@ -90,10 +60,10 @@ Resources:
               Service:
                 - lambda.amazonaws.com
             Action:
-              - "sts:AssumeRole"
+              - sts:AssumeRole
       Path: /
       ManagedPolicyArns:
-        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
         - PolicyName: KnowledgeBaseExecutionPermissions
           PolicyDocument:
@@ -101,12 +71,12 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - 'bedrock:InvokeModel'
-                  - 'bedrock:Retrieve'
-                  - 'bedrock:RetrieveAndGenerate'
-                  - 's3:GetObject'
-                  - 's3:ListBucket'
-                  - 's3:GetObject'
+                  - bedrock:InvokeModel
+                  - bedrock:Retrieve
+                  - bedrock:RetrieveAndGenerate
+                  - s3:GetObject
+                  - s3:ListBucket
+                  - aoss:APIAccessAll
                 Resource: '*'
 
   # Lambda Layer for Knowledge Base
@@ -116,14 +86,47 @@ Resources:
       LayerName: KnowledgeBaseLambdaLayer
       Description: Knowledge Base Lambda Layer
       Content:
-        S3Bucket: !Ref LambdaLayerS3BucketName
-        S3Key: lambdalayer/knowledgebase_lambdalayer.zip
+        ZipFile: >
+          <YOUR_BASE64_ZIP_FILE_CONTENT>
       CompatibleRuntimes:
         - python3.12
         - python3.11
         - python3.10
 
-  # Lambda Function for Knowledge Base
+  # Lambda Function to Create Knowledge Base
+  CreateKnowledgeBaseLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: CreateKnowledgeBase
+      Code:
+        ZipFile: |
+          import json
+          import boto3
+
+          def lambda_handler(event, context):
+              client = boto3.client('bedrock')
+              response = client.create_knowledge_base(
+                  Name='MyKnowledgeBase'
+              )
+              knowledge_base_id = response['KnowledgeBaseId']
+              return {
+                  'PhysicalResourceId': knowledge_base_id,
+                  'Data': {
+                      'KnowledgeBaseID': knowledge_base_id
+                  }
+              }
+      Handler: index.lambda_handler
+      Role: !GetAtt LambdaExecutionRoleForKnowledgeBase.Arn
+      Runtime: python3.12
+      Timeout: 300
+
+  # Custom Resource to Create Knowledge Base
+  KnowledgeBase:
+    Type: Custom::KnowledgeBase
+    Properties:
+      ServiceToken: !GetAtt CreateKnowledgeBaseLambda.Arn
+
+  # Lambda Function for Knowledge Base Operations
   DeployKnowledgeBaseLambda:
     Type: AWS::Lambda::Function
     Properties:
@@ -190,11 +193,11 @@ Resources:
       Role: !GetAtt LambdaExecutionRoleForKnowledgeBase.Arn
       Runtime: python3.12
       Timeout: 60
-      Layers: 
+      Layers:
         - !Ref DeployKnowledgeBaseLambdaLayer
       Environment:
         Variables:
-          KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseID
+          KNOWLEDGE_BASE_ID: !GetAtt KnowledgeBase.KnowledgeBaseID
 
   # Lambda Function for Streamlit Frontend
   StreamlitFrontendLambda:
@@ -282,13 +285,48 @@ Resources:
               # Add assistant response to chat history
               st.session_state.messages.append({"role": "assistant", "content": answer})
       Description: Streamlit frontend for Financial Chatbot using Knowledge Bases
-      Handler: streamlit.main
+      Handler: index.lambda_handler
       MemorySize: 512
       Role: !GetAtt LambdaExecutionRoleForKnowledgeBase.Arn
       Runtime: python3.12
       Timeout: 300
       Layers:
         - !Ref DeployKnowledgeBaseLambdaLayer
+
+  # API Gateway to expose the Streamlit frontend Lambda function
+  ApiGatewayRestApi:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: StreamlitFrontendApi
+      Description: API Gateway for Streamlit Frontend Lambda
+
+  ApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+      PathPart: streamlit
+
+  ApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      RestApiId: !Ref ApiGatewayRestApi
+      ResourceId: !Ref ApiGatewayResource
+      HttpMethod: GET
+      AuthorizationType: NONE
+      Integration:
+        IntegrationHttpMethod: POST
+        Type: AWS_PROXY
+        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${StreamlitFrontendLambda.Arn}/invocations
+
+  # Permission for API Gateway to invoke the Streamlit Lambda function
+  StreamlitLambdaPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !Ref StreamlitFrontendLambda
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/GET/streamlit
 
 Outputs:
   BedrockExecutionRoleArn:
@@ -300,3 +338,6 @@ Outputs:
   StreamlitFrontendLambdaArn:
     Description: ARN of the StreamlitFrontend Lambda Function
     Value: !GetAtt StreamlitFrontendLambda.Arn
+  StreamlitFrontendUrl:
+    Description: URL for the Streamlit Frontend
+    Value: !Sub https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/streamlit
