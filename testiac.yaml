@@ -5,6 +5,12 @@ Parameters:
   DocumentS3Key:
     Type: String
     Description: S3 key for the documents to ingest
+  LambdaLayerS3BucketName:
+    Type: String
+    Description: The S3 bucket storing the lambda layer code
+  LambdaLayerS3Key:
+    Type: String
+    Description: The S3 key for the lambda layer zip file
 
 Resources:
   # S3 Bucket for Knowledge Base
@@ -86,8 +92,8 @@ Resources:
       LayerName: KnowledgeBaseLambdaLayer
       Description: Knowledge Base Lambda Layer
       Content:
-        ZipFile: >
-          <YOUR_BASE64_ZIP_FILE_CONTENT>
+        S3Bucket: !Ref LambdaLayerS3BucketName
+        S3Key: !Ref LambdaLayerS3Key
       CompatibleRuntimes:
         - python3.12
         - python3.11
