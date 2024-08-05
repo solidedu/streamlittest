@@ -1,0 +1,302 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Template to deploy RAG solution with AWS Bedrock knowledge base, OpenSearch Serverless, and Streamlit frontend using Lambda
+
+Parameters:
+  KnowledgeBaseBucketName:
+    Type: String
+    Description: Name of the S3 bucket to store the knowledge base
+  CollectionId:
+    Type: String
+    Description: ID of the OpenSearch Serverless collection
+  VectorStoreName:
+    Type: String
+    Description: Name of the vector store
+  DocumentS3Key:
+    Type: String
+    Description: S3 key for the documents to ingest
+  KnowledgeBaseID:
+    Type: String
+    Description: The Bedrock Knowledge base ID
+  LambdaLayerS3BucketName:
+    Type: String
+    Description: The S3 bucket storing lambda layer code
+
+Resources:
+  # S3 Bucket for Knowledge Base
+  KnowledgeBaseBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Ref KnowledgeBaseBucketName
+
+  # IAM Role for Bedrock Execution
+  BedrockExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: bedrock.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: AmazonBedrockFoundationModelPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - bedrock:InvokeModel
+                Resource: !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v1'
+        - PolicyName: AmazonBedrockS3Policy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:ListBucket
+                Resource:
+                  - !Sub 'arn:aws:s3:::${KnowledgeBaseBucketName}'
+                  - !Sub 'arn:aws:s3:::${KnowledgeBaseBucketName}/*'
+                Condition:
+                  StringEquals:
+                    aws:ResourceAccount: !Sub '${AWS::AccountId}'
+
+  # IAM Policy for OpenSearch Serverless Access
+  OSSPolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub 'AmazonBedrockOSSPolicyForKnowledgeBase-${AWS::StackName}'
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Action:
+              - aoss:APIAccessAll
+            Resource: !Sub 'arn:aws:aoss:${AWS::Region}:${AWS::AccountId}:collection/${CollectionId}'
+      Roles:
+        - !Ref BedrockExecutionRole
+
+  # Lambda Execution Role for Knowledge Base and Streamlit
+  LambdaExecutionRoleForKnowledgeBase:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - lambda.amazonaws.com
+            Action:
+              - "sts:AssumeRole"
+      Path: /
+      ManagedPolicyArns:
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: KnowledgeBaseExecutionPermissions
+          PolicyDocument:
+            Version: 2012-10-17
+            Statement:
+              - Effect: Allow
+                Action:
+                  - 'bedrock:InvokeModel'
+                  - 'bedrock:Retrieve'
+                  - 'bedrock:RetrieveAndGenerate'
+                  - 's3:GetObject'
+                  - 's3:ListBucket'
+                  - 's3:GetObject'
+                Resource: '*'
+
+  # Lambda Layer for Knowledge Base
+  DeployKnowledgeBaseLambdaLayer:
+    Type: AWS::Lambda::LayerVersion
+    Properties:
+      LayerName: KnowledgeBaseLambdaLayer
+      Description: Knowledge Base Lambda Layer
+      Content:
+        S3Bucket: !Ref LambdaLayerS3BucketName
+        S3Key: lambdalayer/knowledgebase_lambdalayer.zip
+      CompatibleRuntimes:
+        - python3.12
+        - python3.11
+        - python3.10
+
+  # Lambda Function for Knowledge Base
+  DeployKnowledgeBaseLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: InvokeKnowledgeBase
+      Code:
+        ZipFile: |
+          import os
+          import boto3
+          import json
+
+          boto3_session = boto3.session.Session()
+          region = boto3_session.region_name
+
+          # create a boto3 bedrock client
+          bedrock_agent_runtime_client = boto3.client('bedrock-agent-runtime')
+
+          # get knowledge base id from environment variable
+          kb_id = os.environ.get("KNOWLEDGE_BASE_ID")
+
+          # declare model id for calling RetrieveAndGenerate API
+          model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
+          model_arn = f'arn:aws:bedrock:{region}::foundation-model/{model_id}'
+
+          def retrieveAndGenerate(input, kbId, model_arn, sessionId):
+              if sessionId != "":
+                  return bedrock_agent_runtime_client.retrieve_and_generate(
+                      input={'text': input},
+                      retrieveAndGenerateConfiguration={
+                          'type': 'KNOWLEDGE_BASE',
+                          'knowledgeBaseConfiguration': {
+                              'knowledgeBaseId': kbId,
+                              'modelArn': model_arn
+                          }
+                      },
+                      sessionId=sessionId
+                  )
+              else:
+                  return bedrock_agent_runtime_client.retrieve_and_generate(
+                      input={'text': input},
+                      retrieveAndGenerateConfiguration={
+                          'type': 'KNOWLEDGE_BASE',
+                          'knowledgeBaseConfiguration': {
+                              'knowledgeBaseId': kbId,
+                              'modelArn': model_arn
+                          }
+                      }
+                  )
+
+          def lambda_handler(event, context):
+              query = event["question"]
+              sessionId = event.get("sessionId", "")
+              response = retrieveAndGenerate(query, kb_id, model_arn, sessionId)
+              generated_text = response['output']['text']
+              sessionId = response['sessionId']
+              citations = response['citations']
+              return {
+                  'statusCode': 200,
+                  'body': json.dumps({"question": query.strip(), "answer": generated_text.strip(), "sessionId": sessionId, "citations": citations})
+              }
+
+      Description: Lambda function for invoking the Knowledge Base
+      Handler: index.lambda_handler
+      MemorySize: 256
+      Role: !GetAtt LambdaExecutionRoleForKnowledgeBase.Arn
+      Runtime: python3.12
+      Timeout: 60
+      Layers: 
+        - !Ref DeployKnowledgeBaseLambdaLayer
+      Environment:
+        Variables:
+          KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseID
+
+  # Lambda Function for Streamlit Frontend
+  StreamlitFrontendLambda:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: StreamlitFrontend
+      Code:
+        ZipFile: |
+          import streamlit as st
+          import boto3
+          import json
+
+          region = boto3.Session().region_name
+          session = boto3.Session(region_name=region)
+          lambda_client = session.client('lambda')
+
+          # Function to generate presigned URL for S3 object
+          def generate_presigned_url(bucket_uri):
+              s3 = boto3.client('s3')
+              bucket_name, key = bucket_uri.split('/', 2)[-1].split('/', 1)
+              try:
+                  presigned_url = s3.generate_presigned_url(
+                      'get_object',
+                      Params={'Bucket': bucket_name, 'Key': key},
+                      ExpiresIn=3600  # URL expires in 1 hour
+                  )
+                  return presigned_url
+              except ClientError as e:
+                  st.error(f"Error generating presigned URL: {e}")
+
+          st.title("Financial Chatbot using Knowledge Bases for Amazon Bedrock")
+
+          sessionId = ""
+          # Initialize chat history
+          if "messages" not in st.session_state:
+              st.session_state.messages = []
+
+          # Initialize session id
+          if 'sessionId' not in st.session_state:
+              st.session_state['sessionId'] = sessionId
+
+          # Display chat messages from history on app rerun
+          for message in st.session_state.messages:
+              with st.chat_message(message["role"]):
+                  st.markdown(message["content"])
+
+          # React to user input
+          if prompt := st.chat_input("What is up?"):
+              # Display user input in chat message container
+              question = prompt
+              st.chat_message("user").markdown(question)
+
+              # Call lambda function to get response from the model
+              payload = json.dumps({"question": prompt, "sessionId": st.session_state['sessionId']})
+              result = lambda_client.invoke(
+                          FunctionName='InvokeKnowledgeBase',
+                          Payload=payload
+                      )
+
+              result = json.loads(result['Payload'].read().decode("utf-8"))
+
+              answer = result['body']['answer']
+              sessionId = result['body']['sessionId']
+              citations = result['body']['citations']
+
+              st.session_state['sessionId'] = sessionId
+
+              # Add user input to chat history
+              st.session_state.messages.append({"role": "user", "content": question})
+
+              # Display assistant response in chat message container
+              with st.chat_message("assistant"):
+                  # Loop over the citations list and display each citation in a separate chat message
+                  for citation in citations:
+                      display_text = citation['generatedResponsePart']['textResponsePart']['text']
+                      st.markdown(display_text)
+                      display_link = ''
+                      for reference in citation['retrievedReferences']:
+                          url = reference['location']['s3Location']['uri']
+                          help_text = reference['content']['text']
+                          s3_presigned_url = generate_presigned_url(url)
+                          display_link = f"[Doc link]({s3_presigned_url})"
+                          st.markdown(display_link, help=help_text)
+
+              # Add assistant response to chat history
+              st.session_state.messages.append({"role": "assistant", "content": answer})
+      Description: Streamlit frontend for Financial Chatbot using Knowledge Bases
+      Handler: streamlit.main
+      MemorySize: 512
+      Role: !GetAtt LambdaExecutionRoleForKnowledgeBase.Arn
+      Runtime: python3.12
+      Timeout: 300
+      Layers:
+        - !Ref DeployKnowledgeBaseLambdaLayer
+
+Outputs:
+  BedrockExecutionRoleArn:
+    Description: ARN of the Bedrock Execution Role
+    Value: !GetAtt BedrockExecutionRole.Arn
+  InvokeKnowledgeBaseLambdaArn:
+    Description: ARN of the InvokeKnowledgeBase Lambda Function
+    Value: !GetAtt DeployKnowledgeBaseLambda.Arn
+  StreamlitFrontendLambdaArn:
+    Description: ARN of the StreamlitFrontend Lambda Function
+    Value: !GetAtt StreamlitFrontendLambda.Arn
