@@ -5,13 +5,22 @@ Parameters:
   DocumentS3Key:
     Type: String
     Description: S3 key for the documents to ingest
+  LambdaLayerS3BucketName:
+    Type: String
+    Description: The S3 bucket storing the Lambda layer code
+  LambdaLayerS3Key:
+    Type: String
+    Description: The S3 key for the Lambda layer zip file
+  KnowledgeBaseBucketName:
+    Type: String
+    Description: The name of the S3 bucket for the Knowledge Base
 
 Resources:
   # S3 Bucket for Knowledge Base
   KnowledgeBaseBucket:
     Type: AWS::S3::Bucket
     Properties:
-      BucketName: !Sub 'bedrockkb-iac'
+      BucketName: !Ref KnowledgeBaseBucketName
 
   # IAM Role for Bedrock Execution
   BedrockExecutionRole:
@@ -42,8 +51,8 @@ Resources:
                   - s3:GetObject
                   - s3:ListBucket
                 Resource:
-                  - !Sub 'arn:aws:s3:::bedrockkb-iac'
-                  - !Sub 'arn:aws:s3:::bedrockkb-iac/*'
+                  - !Sub 'arn:aws:s3:::${KnowledgeBaseBucketName}'
+                  - !Sub 'arn:aws:s3:::${KnowledgeBaseBucketName}/*'
                 Condition:
                   StringEquals:
                     aws:ResourceAccount: !Sub '${AWS::AccountId}'
@@ -86,8 +95,8 @@ Resources:
       LayerName: KnowledgeBaseLambdaLayer
       Description: Knowledge Base Lambda Layer
       Content:
-        S3Bucket: bedrockkb-iac
-        S3Key: lambdalayer/lambda-layer.zip
+        S3Bucket: !Ref LambdaLayerS3BucketName
+        S3Key: !Ref LambdaLayerS3Key
       CompatibleRuntimes:
         - python3.12
         - python3.11
