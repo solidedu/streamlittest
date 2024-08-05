@@ -13,15 +13,9 @@ Parameters:
     Description: The S3 key for the Lambda layer zip file
   KnowledgeBaseBucketName:
     Type: String
-    Description: The name of the S3 bucket for the Knowledge Base
+    Description: The name of the existing S3 bucket for the Knowledge Base
 
 Resources:
-  # S3 Bucket for Knowledge Base
-  KnowledgeBaseBucket:
-    Type: AWS::S3::Bucket
-    Properties:
-      BucketName: !Ref KnowledgeBaseBucketName
-
   # IAM Role for Bedrock Execution
   BedrockExecutionRole:
     Type: AWS::IAM::Role
