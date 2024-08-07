@@ -1,19 +1,18 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Template to deploy RAG solution with AWS Bedrock knowledge base, OpenSearch Serverless, and Streamlit frontend using Lambda
+Description: Template to deploy AWS Bedrock knowledge base and Lambda functions for API operations
 
 Parameters:
   DocumentS3Key:
     Type: String
     Description: S3 key for the documents to ingest
+  KnowledgeBaseID:
+    Type: String
+    Description: The Bedrock Knowledge base ID
+    Default: ''
   LambdaLayerS3BucketName:
     Type: String
-    Description: The S3 bucket storing the Lambda layer code
-  LambdaLayerS3Key:
-    Type: String
-    Description: The S3 key for the Lambda layer zip file
-  KnowledgeBaseBucketName:
-    Type: String
-    Description: The name of the existing S3 bucket for the Knowledge Base
+    Description: The S3 bucket stores lambda layer code
+    Default: ''
 
 Resources:
   # IAM Role for Bedrock Execution
@@ -77,9 +76,6 @@ Resources:
                   - bedrock:InvokeModel
                   - bedrock:Retrieve
                   - bedrock:RetrieveAndGenerate
-                  - s3:GetObject
-                  - s3:ListBucket
-                  - aoss:APIAccessAll
                 Resource: '*'
 
   # Lambda Layer for Knowledge Base
@@ -90,7 +86,7 @@ Resources:
       Description: Knowledge Base Lambda Layer
       Content:
         S3Bucket: !Ref LambdaLayerS3BucketName
-        S3Key: !Ref LambdaLayerS3Key
+        S3Key: lambdalayer/knowledgebase_lambdalayer.zip
       CompatibleRuntimes:
         - python3.12
         - python3.11
@@ -138,7 +134,8 @@ Resources:
         ZipFile: |
           import os
           import boto3
-          import json
+          import random
+          import string
 
           boto3_session = boto3.session.Session()
           region = boto3_session.region_name
@@ -148,15 +145,19 @@ Resources:
 
           # get knowledge base id from environment variable
           kb_id = os.environ.get("KNOWLEDGE_BASE_ID")
+          #print (kb_id)
 
           # declare model id for calling RetrieveAndGenerate API
           model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
           model_arn = f'arn:aws:bedrock:{region}::foundation-model/{model_id}'
 
           def retrieveAndGenerate(input, kbId, model_arn, sessionId):
+              #print(input, kbId, model_arn, sessionId)
               if sessionId != "":
                   return bedrock_agent_runtime_client.retrieve_and_generate(
-                      input={'text': input},
+                      input={
+                          'text': input
+                      },
                       retrieveAndGenerateConfiguration={
                           'type': 'KNOWLEDGE_BASE',
                           'knowledgeBaseConfiguration': {
@@ -168,7 +169,9 @@ Resources:
                   )
               else:
                   return bedrock_agent_runtime_client.retrieve_and_generate(
-                      input={'text': input},
+                      input={
+                          'text': input
+                      },
                       retrieveAndGenerateConfiguration={
                           'type': 'KNOWLEDGE_BASE',
                           'knowledgeBaseConfiguration': {
@@ -180,156 +183,28 @@ Resources:
 
           def lambda_handler(event, context):
               query = event["question"]
-              sessionId = event.get("sessionId", "")
+              sessionId = event["sessionId"]
               response = retrieveAndGenerate(query, kb_id, model_arn, sessionId)
               generated_text = response['output']['text']
               sessionId = response['sessionId']
               citations = response['citations']
+              print (generated_text)
+              print (sessionId)
               return {
                   'statusCode': 200,
-                  'body': json.dumps({"question": query.strip(), "answer": generated_text.strip(), "sessionId": sessionId, "citations": citations})
+                  'body': {"question": query.strip(), "answer": generated_text.strip(), "sessionId":sessionId, "citations":citations}
               }
-
-      Description: Lambda function for invoking the Knowledge Base
+      Description: Create KnowledgeBase Lambda
       Handler: index.lambda_handler
       MemorySize: 256
       Role: !GetAtt LambdaExecutionRoleForKnowledgeBase.Arn
       Runtime: python3.12
       Timeout: 60
-      Layers:
+      Layers: 
         - !Ref DeployKnowledgeBaseLambdaLayer
       Environment:
         Variables:
-          KNOWLEDGE_BASE_ID: !GetAtt KnowledgeBase.KnowledgeBaseID
-
-  # Lambda Function for Streamlit Frontend
-  StreamlitFrontendLambda:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: StreamlitFrontend
-      Code:
-        ZipFile: |
-          import streamlit as st
-          import boto3
-          import json
-
-          region = boto3.Session().region_name
-          session = boto3.Session(region_name=region)
-          lambda_client = session.client('lambda')
-
-          # Function to generate presigned URL for S3 object
-          def generate_presigned_url(bucket_uri):
-              s3 = boto3.client('s3')
-              bucket_name, key = bucket_uri.split('/', 2)[-1].split('/', 1)
-              try:
-                  presigned_url = s3.generate_presigned_url(
-                      'get_object',
-                      Params={'Bucket': bucket_name, 'Key': key},
-                      ExpiresIn=3600  # URL expires in 1 hour
-                  )
-                  return presigned_url
-              except ClientError as e:
-                  st.error(f"Error generating presigned URL: {e}")
-
-          st.title("Financial Chatbot using Knowledge Bases for Amazon Bedrock")
-
-          sessionId = ""
-          # Initialize chat history
-          if "messages" not in st.session_state:
-              st.session_state.messages = []
-
-          # Initialize session id
-          if 'sessionId' not in st.session_state:
-              st.session_state['sessionId'] = sessionId
-
-          # Display chat messages from history on app rerun
-          for message in st.session_state.messages:
-              with st.chat_message(message["role"]):
-                  st.markdown(message["content"])
-
-          # React to user input
-          if prompt := st.chat_input("What is up?"):
-              # Display user input in chat message container
-              question = prompt
-              st.chat_message("user").markdown(question)
-
-              # Call lambda function to get response from the model
-              payload = json.dumps({"question": prompt, "sessionId": st.session_state['sessionId']})
-              result = lambda_client.invoke(
-                          FunctionName='InvokeKnowledgeBase',
-                          Payload=payload
-                      )
-
-              result = json.loads(result['Payload'].read().decode("utf-8"))
-
-              answer = result['body']['answer']
-              sessionId = result['body']['sessionId']
-              citations = result['body']['citations']
-
-              st.session_state['sessionId'] = sessionId
-
-              # Add user input to chat history
-              st.session_state.messages.append({"role": "user", "content": question})
-
-              # Display assistant response in chat message container
-              with st.chat_message("assistant"):
-                  # Loop over the citations list and display each citation in a separate chat message
-                  for citation in citations:
-                      display_text = citation['generatedResponsePart']['textResponsePart']['text']
-                      st.markdown(display_text)
-                      display_link = ''
-                      for reference in citation['retrievedReferences']:
-                          url = reference['location']['s3Location']['uri']
-                          help_text = reference['content']['text']
-                          s3_presigned_url = generate_presigned_url(url)
-                          display_link = f"[Doc link]({s3_presigned_url})"
-                          st.markdown(display_link, help=help_text)
-
-              # Add assistant response to chat history
-              st.session_state.messages.append({"role": "assistant", "content": answer})
-      Description: Streamlit frontend for Financial Chatbot using Knowledge Bases
-      Handler: index.lambda_handler
-      MemorySize: 512
-      Role: !GetAtt LambdaExecutionRoleForKnowledgeBase.Arn
-      Runtime: python3.12
-      Timeout: 300
-      Layers:
-        - !Ref DeployKnowledgeBaseLambdaLayer
-
-  # API Gateway to expose the Streamlit frontend Lambda function
-  ApiGatewayRestApi:
-    Type: AWS::ApiGateway::RestApi
-    Properties:
-      Name: StreamlitFrontendApi
-      Description: API Gateway for Streamlit Frontend Lambda
-
-  ApiGatewayResource:
-    Type: AWS::ApiGateway::Resource
-    Properties:
-      RestApiId: !Ref ApiGatewayRestApi
-      ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
-      PathPart: streamlit
-
-  ApiGatewayMethod:
-    Type: AWS::ApiGateway::Method
-    Properties:
-      RestApiId: !Ref ApiGatewayRestApi
-      ResourceId: !Ref ApiGatewayResource
-      HttpMethod: GET
-      AuthorizationType: NONE
-      Integration:
-        IntegrationHttpMethod: POST
-        Type: AWS_PROXY
-        Uri: !Sub arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${StreamlitFrontendLambda.Arn}/invocations
-
-  # Permission for API Gateway to invoke the Streamlit Lambda function
-  StreamlitLambdaPermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref StreamlitFrontendLambda
-      Action: lambda:InvokeFunction
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/GET/streamlit
+          KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseID
 
 Outputs:
   BedrockExecutionRoleArn:
@@ -338,9 +213,9 @@ Outputs:
   InvokeKnowledgeBaseLambdaArn:
     Description: ARN of the InvokeKnowledgeBase Lambda Function
     Value: !GetAtt DeployKnowledgeBaseLambda.Arn
-  StreamlitFrontendLambdaArn:
-    Description: ARN of the StreamlitFrontend Lambda Function
-    Value: !GetAtt StreamlitFrontendLambda.Arn
-  StreamlitFrontendUrl:
-    Description: URL for the Streamlit Frontend
-    Value: !Sub https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/Prod/streamlit
+  CreateKnowledgeBaseLambdaArn:
+    Description: ARN of the CreateKnowledgeBase Lambda Function
+    Value: !GetAtt CreateKnowledgeBaseLambda.Arn
+  KnowledgeBaseID:
+    Description: ID of the created Knowledge Base
+    Value: !GetAtt KnowledgeBase.KnowledgeBaseID
