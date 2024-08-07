@@ -21,13 +21,12 @@ Resources:
         Type: VECTOR
         VectorKnowledgeBaseConfiguration:
           EmbeddingModel:
-            ModelId: anthropic.claude-v2
-      DataSource:
-        DataSourceConfiguration:
-          S3Configuration:
-            BucketName: !Ref KnowledgeBaseS3Bucket
-            InclusionPrefixes: 
-              - !Ref KnowledgeBaseS3Prefix
+            ModelId: amazon.titan-embed-text-v1
+      StorageConfiguration:
+        Type: AWS_S3
+        S3Configuration:
+          BucketName: !Ref KnowledgeBaseS3Bucket
+          Prefix: !Ref KnowledgeBaseS3Prefix
 
   LambdaExecutionRole:
     Type: AWS::IAM::Role
