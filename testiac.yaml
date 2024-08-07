@@ -1,60 +1,35 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: Template to deploy AWS Bedrock knowledge base and Lambda functions for API operations
+Description: 'End-to-end CloudFormation template for Bedrock Knowledge Base, Lambda, and Frontend'
 
 Parameters:
-  DocumentS3Key:
+  KnowledgeBaseS3Bucket:
     Type: String
-    Description: S3 key for the documents to ingest
-  KnowledgeBaseID:
+    Description: The S3 bucket containing the knowledge base articles
+
+  KnowledgeBaseS3Prefix:
     Type: String
-    Description: The Bedrock Knowledge base ID
+    Description: The S3 prefix (folder) containing the knowledge base articles
     Default: ''
-  LambdaLayerS3BucketName:
-    Type: String
-    Description: The S3 bucket storing the Lambda layer code
-    Default: ''
-  KnowledgeBaseBucketName:
-    Type: String
-    Description: The name of the existing S3 bucket for the Knowledge Base
 
 Resources:
-  # IAM Role for Bedrock Execution
-  BedrockExecutionRole:
-    Type: AWS::IAM::Role
+  BedrockKnowledgeBase:
+    Type: AWS::Bedrock::KnowledgeBase
     Properties:
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: bedrock.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: AmazonBedrockFoundationModelPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - bedrock:InvokeModel
-                Resource: !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v1'
-        - PolicyName: AmazonBedrockS3Policy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:ListBucket
-                Resource:
-                  - !Sub 'arn:aws:s3:::${KnowledgeBaseBucketName}'
-                  - !Sub 'arn:aws:s3:::${KnowledgeBaseBucketName}/*'
-                Condition:
-                  StringEquals:
-                    aws:ResourceAccount: !Sub '${AWS::AccountId}'
+      Name: MyBedrockKnowledgeBase
+      Description: Knowledge base for contextual chatbot
+      KnowledgeBaseConfiguration:
+        Type: VECTOR
+        VectorKnowledgeBaseConfiguration:
+          EmbeddingModel:
+            ModelId: anthropic.claude-v2
+      DataSource:
+        DataSourceConfiguration:
+          S3Configuration:
+            BucketName: !Ref KnowledgeBaseS3Bucket
+            InclusionPrefixes: 
+              - !Ref KnowledgeBaseS3Prefix
 
-  # IAM Role for Lambda Functions
-  LambdaExecutionRoleForKnowledgeBase:
+  LambdaExecutionRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
@@ -62,163 +37,181 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
-      Path: /
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
       ManagedPolicyArns:
         - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
       Policies:
-        - PolicyName: KnowledgeBaseExecutionPermissions
+        - PolicyName: BedrockAccess
           PolicyDocument:
-            Version: 2012-10-17
+            Version: '2012-10-17'
             Statement:
               - Effect: Allow
                 Action:
                   - bedrock:InvokeModel
-                  - bedrock:Retrieve
-                  - bedrock:RetrieveAndGenerate
+                  - bedrock:ListKnowledgeBases
+                  - bedrock:QueryKnowledgeBase
                 Resource: '*'
 
-  # Lambda Layer for Knowledge Base
-  DeployKnowledgeBaseLambdaLayer:
-    Type: AWS::Lambda::LayerVersion
-    Properties:
-      LayerName: KnowledgeBaseLambdaLayer
-      Description: Knowledge Base Lambda Layer
-      Content:
-        S3Bucket: !Ref LambdaLayerS3BucketName
-        S3Key: lambdalayer/knowledgebase_lambdalayer.zip
-      CompatibleRuntimes:
-        - python3.12
-        - python3.11
-        - python3.10
-
-  # Lambda Function to Create Knowledge Base
-  CreateKnowledgeBaseLambda:
+  BedrockLambdaFunction:
     Type: AWS::Lambda::Function
     Properties:
-      FunctionName: CreateKnowledgeBase
+      FunctionName: BedrockChatbotFunction
+      Handler: index.handler
+      Role: !GetAtt LambdaExecutionRole.Arn
       Code:
         ZipFile: |
           import json
           import boto3
-
-          def lambda_handler(event, context):
-              client = boto3.client('bedrock')
-              response = client.create_knowledge_base(
-                  Name='MyKnowledgeBase'
-              )
-              knowledge_base_id = response['KnowledgeBaseId']
-              return {
-                  'PhysicalResourceId': knowledge_base_id,
-                  'Data': {
-                      'KnowledgeBaseID': knowledge_base_id
-                  }
-              }
-      Handler: index.lambda_handler
-      Role: !GetAtt LambdaExecutionRoleForKnowledgeBase.Arn
-      Runtime: python3.12
-      Timeout: 300
-
-  # Custom Resource to Create Knowledge Base
-  KnowledgeBase:
-    Type: Custom::KnowledgeBase
-    Properties:
-      ServiceToken: !GetAtt CreateKnowledgeBaseLambda.Arn
-
-  # Lambda Function for Knowledge Base Operations
-  DeployKnowledgeBaseLambda:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: InvokeKnowledgeBase
-      Code:
-        ZipFile: |
           import os
-          import boto3
-          import random
-          import string
 
-          boto3_session = boto3.session.Session()
-          region = boto3_session.region_name
+          bedrock_runtime = boto3.client('bedrock-runtime')
+          bedrock = boto3.client('bedrock')
 
-          # create a boto3 bedrock client
-          bedrock_agent_runtime_client = boto3.client('bedrock-agent-runtime')
+          KNOWLEDGE_BASE_ID = os.environ['KNOWLEDGE_BASE_ID']
+          MODEL_ID = 'anthropic.claude-v2'
 
-          # get knowledge base id from environment variable
-          kb_id = os.environ.get("KNOWLEDGE_BASE_ID")
-          #print (kb_id)
-
-          # declare model id for calling RetrieveAndGenerate API
-          model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
-          model_arn = f'arn:aws:bedrock:{region}::foundation-model/{model_id}'
-
-          def retrieveAndGenerate(input, kbId, model_arn, sessionId):
-              #print(input, kbId, model_arn, sessionId)
-              if sessionId != "":
-                  return bedrock_agent_runtime_client.retrieve_and_generate(
-                      input={
-                          'text': input
-                      },
-                      retrieveAndGenerateConfiguration={
-                          'type': 'KNOWLEDGE_BASE',
-                          'knowledgeBaseConfiguration': {
-                              'knowledgeBaseId': kbId,
-                              'modelArn': model_arn
-                          }
-                      },
-                      sessionId=sessionId
-                  )
-              else:
-                  return bedrock_agent_runtime_client.retrieve_and_generate(
-                      input={
-                          'text': input
-                      },
-                      retrieveAndGenerateConfiguration={
-                          'type': 'KNOWLEDGE_BASE',
-                          'knowledgeBaseConfiguration': {
-                              'knowledgeBaseId': kbId,
-                              'modelArn': model_arn
-                          }
+          def query_knowledge_base(query):
+              response = bedrock.query_knowledge_base(
+                  knowledgeBaseId=KNOWLEDGE_BASE_ID,
+                  query=query,
+                  retrievalConfiguration={
+                      'vectorSearchConfiguration': {
+                          'numberOfResults': 3
                       }
-                  )
+                  }
+              )
+              return response['retrievalResults']
 
-          def lambda_handler(event, context):
-              query = event["question"]
-              sessionId = event["sessionId"]
-              response = retrieveAndGenerate(query, kb_id, model_arn, sessionId)
-              generated_text = response['output']['text']
-              sessionId = response['sessionId']
-              citations = response['citations']
-              print (generated_text)
-              print (sessionId)
+          def invoke_model(prompt):
+              body = json.dumps({
+                  "prompt": prompt,
+                  "max_tokens_to_sample": 300,
+                  "temperature": 0.7,
+                  "top_p": 1,
+                  "stop_sequences": ["\n\nHuman:"]
+              })
+              
+              response = bedrock_runtime.invoke_model(
+                  modelId=MODEL_ID,
+                  contentType='application/json',
+                  accept='application/json',
+                  body=body
+              )
+              
+              response_body = json.loads(response['body'].read())
+              return response_body['completion']
+
+          def handler(event, context):
+              body = json.loads(event['body'])
+              query = body['query']
+              
+              # Query the knowledge base
+              retrieval_results = query_knowledge_base(query)
+              
+              # Prepare context from retrieval results
+              context = "\n".join([result['content'] for result in retrieval_results])
+              
+              # Prepare prompt for the model
+              prompt = f"""Human: Use the following information to answer the question. If the information doesn't contain the answer, say you don't know.
+
+              Information:
+              {context}
+
+              Question: {query}
+
+              Assistant: Based on the information provided, I'll do my best to answer your question.
+
+              """
+              
+              # Invoke the model
+              response = invoke_model(prompt)
+              
               return {
                   'statusCode': 200,
-                  'body': {"question": query.strip(), "answer": generated_text.strip(), "sessionId":sessionId, "citations":citations}
+                  'body': json.dumps({
+                      'answer': response,
+                      'sources': [result['location']['s3Location']['uri'] for result in retrieval_results]
+                  }),
+                  'headers': {
+                      'Content-Type': 'application/json',
+                      'Access-Control-Allow-Origin': '*'
+                  }
               }
-      Description: Create KnowledgeBase Lambda
-      Handler: index.lambda_handler
-      MemorySize: 256
-      Role: !GetAtt LambdaExecutionRoleForKnowledgeBase.Arn
-      Runtime: python3.12
-      Timeout: 60
-      Layers: 
-        - !Ref DeployKnowledgeBaseLambdaLayer
+      Runtime: python3.8
+      Timeout: 30
       Environment:
         Variables:
-          KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseID
+          KNOWLEDGE_BASE_ID: !Ref BedrockKnowledgeBase
+
+  ApiGateway:
+    Type: AWS::ApiGateway::RestApi
+    Properties:
+      Name: BedrockChatbotAPI
+
+  ApiGatewayResource:
+    Type: AWS::ApiGateway::Resource
+    Properties:
+      ParentId: !GetAtt ApiGateway.RootResourceId
+      PathPart: 'chat'
+      RestApiId: !Ref ApiGateway
+
+  ApiGatewayMethod:
+    Type: AWS::ApiGateway::Method
+    Properties:
+      HttpMethod: POST
+      ResourceId: !Ref ApiGatewayResource
+      RestApiId: !Ref ApiGateway
+      AuthorizationType: NONE
+      Integration:
+        Type: AWS_PROXY
+        IntegrationHttpMethod: POST
+        Uri: !Sub 
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${LambdaArn}/invocations
+          - LambdaArn: !GetAtt BedrockLambdaFunction.Arn
+
+  ApiGatewayDeployment:
+    Type: AWS::ApiGateway::Deployment
+    DependsOn: ApiGatewayMethod
+    Properties:
+      RestApiId: !Ref ApiGateway
+      StageName: prod
+
+  LambdaApiGatewayInvoke:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !GetAtt BedrockLambdaFunction.Arn
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGateway}/*/POST/chat
+
+  FrontendBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::StackName}-frontend-${AWS::AccountId}
+      AccessControl: PublicRead
+      WebsiteConfiguration:
+        IndexDocument: index.html
+
+  FrontendBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref FrontendBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: '*'
+            Action: s3:GetObject
+            Resource: !Sub ${FrontendBucket.Arn}/*
 
 Outputs:
-  BedrockExecutionRoleArn:
-    Description: ARN of the Bedrock Execution Role
-    Value: !GetAtt BedrockExecutionRole.Arn
-  InvokeKnowledgeBaseLambdaArn:
-    Description: ARN of the InvokeKnowledgeBase Lambda Function
-    Value: !GetAtt DeployKnowledgeBaseLambda.Arn
-  CreateKnowledgeBaseLambdaArn:
-    Description: ARN of the CreateKnowledgeBase Lambda Function
-    Value: !GetAtt CreateKnowledgeBaseLambda.Arn
-  KnowledgeBaseID:
-    Description: ID of the created Knowledge Base
-    Value: !GetAtt KnowledgeBase.KnowledgeBaseID
+  ApiGatewayUrl:
+    Description: URL of the API Gateway endpoint
+    Value: !Sub https://${ApiGateway}.execute-api.${AWS::Region}.amazonaws.com/prod/chat
+  FrontendUrl:
+    Description: URL of the S3 hosted frontend
+    Value: !GetAtt FrontendBucket.WebsiteURL
+  KnowledgeBaseId:
+    Description: ID of the created Bedrock Knowledge Base
+    Value: !Ref BedrockKnowledgeBase
