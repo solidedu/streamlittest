@@ -5,14 +5,12 @@ Parameters:
   DocumentS3Key:
     Type: String
     Description: S3 key for the documents to ingest
-  KnowledgeBaseID:
-    Type: String
-    Description: The Bedrock Knowledge base ID
-    Default: ''
   LambdaLayerS3BucketName:
     Type: String
     Description: The S3 bucket storing the Lambda layer code
-    Default: ''
+  LambdaLayerS3Key:
+    Type: String
+    Description: The S3 key for the Lambda layer zip file
   KnowledgeBaseBucketName:
     Type: String
     Description: The name of the existing S3 bucket for the Knowledge Base
@@ -91,7 +89,7 @@ Resources:
       Description: Knowledge Base Lambda Layer
       Content:
         S3Bucket: !Ref LambdaLayerS3BucketName
-        S3Key: lambdalayer/knowledgebase_lambdalayer.zip
+        S3Key: !Ref LambdaLayerS3Key
       CompatibleRuntimes:
         - python3.12
         - python3.11
@@ -126,7 +124,7 @@ Resources:
 
   # Custom Resource to Create Knowledge Base
   KnowledgeBase:
-    Type: Custom::KnowledgeBase
+    Type: Custom::Resource
     Properties:
       ServiceToken: !GetAtt CreateKnowledgeBaseLambda.Arn
 
@@ -150,19 +148,15 @@ Resources:
 
           # get knowledge base id from environment variable
           kb_id = os.environ.get("KNOWLEDGE_BASE_ID")
-          #print (kb_id)
 
           # declare model id for calling RetrieveAndGenerate API
           model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
           model_arn = f'arn:aws:bedrock:{region}::foundation-model/{model_id}'
 
           def retrieveAndGenerate(input, kbId, model_arn, sessionId):
-              #print(input, kbId, model_arn, sessionId)
               if sessionId != "":
                   return bedrock_agent_runtime_client.retrieve_and_generate(
-                      input={
-                          'text': input
-                      },
+                      input={'text': input},
                       retrieveAndGenerateConfiguration={
                           'type': 'KNOWLEDGE_BASE',
                           'knowledgeBaseConfiguration': {
@@ -174,9 +168,7 @@ Resources:
                   )
               else:
                   return bedrock_agent_runtime_client.retrieve_and_generate(
-                      input={
-                          'text': input
-                      },
+                      input={'text': input},
                       retrieveAndGenerateConfiguration={
                           'type': 'KNOWLEDGE_BASE',
                           'knowledgeBaseConfiguration': {
@@ -193,13 +185,10 @@ Resources:
               generated_text = response['output']['text']
               sessionId = response['sessionId']
               citations = response['citations']
-              print (generated_text)
-              print (sessionId)
               return {
                   'statusCode': 200,
-                  'body': json.dumps({"question": query.strip(), "answer": generated_text.strip(), "sessionId":sessionId, "citations":citations})
+                  'body': {"question": query.strip(), "answer": generated_text.strip(), "sessionId": sessionId, "citations": citations}
               }
-      Description: Create KnowledgeBase Lambda
       Handler: index.lambda_handler
       MemorySize: 256
       Role: !GetAtt LambdaExecutionRoleForKnowledgeBase.Arn
@@ -209,7 +198,7 @@ Resources:
         - !Ref DeployKnowledgeBaseLambdaLayer
       Environment:
         Variables:
-          KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseID
+          KNOWLEDGE_BASE_ID: !GetAtt KnowledgeBase.PhysicalResourceId
 
 Outputs:
   BedrockExecutionRoleArn:
@@ -223,4 +212,4 @@ Outputs:
     Value: !GetAtt CreateKnowledgeBaseLambda.Arn
   KnowledgeBaseID:
     Description: ID of the created Knowledge Base
-    Value: !GetAtt KnowledgeBase.KnowledgeBaseID
+    Value: !GetAtt KnowledgeBase.PhysicalResourceId
