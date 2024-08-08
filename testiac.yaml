@@ -14,6 +14,12 @@ Parameters:
   KnowledgeBaseBucketName:
     Type: String
     Description: The name of the existing S3 bucket for the Knowledge Base
+  LambdaFunctionS3BucketName:
+    Type: String
+    Description: The S3 bucket storing the Lambda function code
+  LambdaFunctionS3Key:
+    Type: String
+    Description: The S3 key for the Lambda function zip file
 
 Resources:
   # IAM Role for Bedrock Execution
@@ -101,22 +107,8 @@ Resources:
     Properties:
       FunctionName: CreateKnowledgeBase
       Code:
-        ZipFile: |
-          import json
-          import boto3
-
-          def lambda_handler(event, context):
-              client = boto3.client('bedrock')
-              response = client.create_knowledge_base(
-                  Name='MyKnowledgeBase'
-              )
-              knowledge_base_id = response['KnowledgeBaseId']
-              return {
-                  'PhysicalResourceId': knowledge_base_id,
-                  'Data': {
-                      'KnowledgeBaseID': knowledge_base_id
-                  }
-              }
+        S3Bucket: !Ref LambdaFunctionS3BucketName
+        S3Key: !Ref LambdaFunctionS3Key
       Handler: index.lambda_handler
       Role: !GetAtt LambdaExecutionRoleForKnowledgeBase.Arn
       Runtime: python3.12
@@ -134,61 +126,8 @@ Resources:
     Properties:
       FunctionName: InvokeKnowledgeBase
       Code:
-        ZipFile: |
-          import os
-          import boto3
-          import random
-          import string
-
-          boto3_session = boto3.session.Session()
-          region = boto3_session.region_name
-
-          # create a boto3 bedrock client
-          bedrock_agent_runtime_client = boto3.client('bedrock-agent-runtime')
-
-          # get knowledge base id from environment variable
-          kb_id = os.environ.get("KNOWLEDGE_BASE_ID")
-
-          # declare model id for calling RetrieveAndGenerate API
-          model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
-          model_arn = f'arn:aws:bedrock:{region}::foundation-model/{model_id}'
-
-          def retrieveAndGenerate(input, kbId, model_arn, sessionId):
-              if sessionId != "":
-                  return bedrock_agent_runtime_client.retrieve_and_generate(
-                      input={'text': input},
-                      retrieveAndGenerateConfiguration={
-                          'type': 'KNOWLEDGE_BASE',
-                          'knowledgeBaseConfiguration': {
-                              'knowledgeBaseId': kbId,
-                              'modelArn': model_arn
-                          }
-                      },
-                      sessionId=sessionId
-                  )
-              else:
-                  return bedrock_agent_runtime_client.retrieve_and_generate(
-                      input={'text': input},
-                      retrieveAndGenerateConfiguration={
-                          'type': 'KNOWLEDGE_BASE',
-                          'knowledgeBaseConfiguration': {
-                              'knowledgeBaseId': kbId,
-                              'modelArn': model_arn
-                          }
-                      }
-                  )
-
-          def lambda_handler(event, context):
-              query = event["question"]
-              sessionId = event["sessionId"]
-              response = retrieveAndGenerate(query, kb_id, model_arn, sessionId)
-              generated_text = response['output']['text']
-              sessionId = response['sessionId']
-              citations = response['citations']
-              return {
-                  'statusCode': 200,
-                  'body': {"question": query.strip(), "answer": generated_text.strip(), "sessionId": sessionId, "citations": citations}
-              }
+        S3Bucket: !Ref LambdaFunctionS3BucketName
+        S3Key: !Ref LambdaFunctionS3Key
       Handler: index.lambda_handler
       MemorySize: 256
       Role: !GetAtt LambdaExecutionRoleForKnowledgeBase.Arn
