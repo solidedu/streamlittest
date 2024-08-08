@@ -1,78 +1,107 @@
-AWSTemplateFormatVersion: '2010-09-09'
-Description: Template to deploy AWS Bedrock knowledge base and Lambda functions for API operations
+AWSTemplateFormatVersion: "2010-09-09"
+Description: A sample template for creating an OpenSearch Serverless collection, knowledge base, and Lambda function with a custom Lambda layer.
 
 Parameters:
-  DocumentS3Key:
+  KnowledgeBaseName:
     Type: String
-    Description: S3 key for the documents to ingest
+    Description: The name of the knowledge base.
+  KnowledgeBaseDescription:
+    Type: String
+    Description: The description of the knowledge base.
+  DataSourceName:
+    Type: String
+    Description: The name of the data source.
+  DataSourceDescription:
+    Type: String
+    Description: The description of the data source.
+  S3DataSourceBucketName:
+    Type: String
+    Description: The name of the S3 bucket containing the data source.
+  S3InclusionPrefixes:
+    Type: CommaDelimitedList
+    Description: A list of prefixes to include within the S3 bucket.
   LambdaLayerS3BucketName:
     Type: String
-    Description: The S3 bucket storing the Lambda layer code
-  LambdaLayerS3Key:
+    Description: The S3 bucket storing the Lambda layer code.
+  KnowledgeBaseID:
     Type: String
-    Description: The S3 key for the Lambda layer zip file
-  KnowledgeBaseBucketName:
-    Type: String
-    Description: The name of the existing S3 bucket for the Knowledge Base
-  LambdaFunctionS3BucketName:
-    Type: String
-    Description: The S3 bucket storing the Lambda function code
-  LambdaFunctionS3Key:
-    Type: String
-    Description: The S3 key for the Lambda function zip file
+    Description: The Bedrock Knowledge base ID
+    Default: ''
 
 Resources:
-  # IAM Role for Bedrock Execution
-  BedrockExecutionRole:
+  # IAM Role for Bedrock Knowledge Base
+  BedrockKnowledgeBaseRole:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: "2012-10-17"
         Statement:
           - Effect: Allow
             Principal:
-              Service: bedrock.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: AmazonBedrockFoundationModelPolicy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - bedrock:InvokeModel
-                Resource: !Sub 'arn:aws:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v1'
-        - PolicyName: AmazonBedrockS3Policy
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:ListBucket
-                Resource:
-                  - !Sub 'arn:aws:s3:::${KnowledgeBaseBucketName}'
-                  - !Sub 'arn:aws:s3:::${KnowledgeBaseBucketName}/*'
-                Condition:
-                  StringEquals:
-                    aws:ResourceAccount: !Sub '${AWS::AccountId}'
+              Service: "bedrock.amazonaws.com"
+            Action: "sts:AssumeRole"
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3ReadOnlyAccess
+      Path: /
+
+  # OpenSearch Serverless Collection
+  OpenSearchServerlessCollection:
+    Type: AWS::OpenSearchServerless::Collection
+    Properties:
+      Name: "knowledge-base-collection"
+      Description: "OpenSearch Serverless collection for knowledge base"
+      Type: VECTOR_SEARCH
+
+  # Bedrock Knowledge Base
+  KnowledgeBaseWithAoss:
+    Type: AWS::Bedrock::KnowledgeBase
+    Properties:
+      Name: !Ref KnowledgeBaseName
+      Description: !Ref KnowledgeBaseDescription
+      RoleArn: !GetAtt BedrockKnowledgeBaseRole.Arn
+      KnowledgeBaseConfiguration:
+        Type: "VECTOR"
+        VectorKnowledgeBaseConfiguration:
+          EmbeddingModelArn: !Sub "arn:${AWS::Partition}:bedrock:${AWS::Region}::foundation-model/amazon.titan-embed-text-v1"
+      StorageConfiguration:
+        Type: "OPENSEARCH_SERVERLESS"
+        OpensearchServerlessConfiguration:
+          CollectionArn: !GetAtt OpenSearchServerlessCollection.Arn
+          VectorIndexName: "knowledge-base-index"
+          FieldMapping:
+            VectorField: "vector-field"
+            TextField: "text"
+            MetadataField: "metadata"
+
+  # Bedrock Data Source
+  SampleDataSource:
+    Type: AWS::Bedrock::DataSource
+    Properties:
+      KnowledgeBaseId: !Ref KnowledgeBaseWithAoss
+      Name: !Ref DataSourceName
+      Description: !Ref DataSourceDescription
+      DataSourceConfiguration:
+        Type: "S3"
+        S3Configuration:
+          BucketArn: !Sub "arn:aws:s3:::${S3DataSourceBucketName}"
+          InclusionPrefixes: !Ref S3InclusionPrefixes
 
   # IAM Role for Lambda Functions
   LambdaExecutionRoleForKnowledgeBase:
     Type: AWS::IAM::Role
     Properties:
       AssumeRolePolicyDocument:
-        Version: '2012-10-17'
+        Version: 2012-10-17
         Statement:
           - Effect: Allow
             Principal:
               Service:
                 - lambda.amazonaws.com
             Action:
-              - sts:AssumeRole
+              - "sts:AssumeRole"
       Path: /
       ManagedPolicyArns:
-        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - 'arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
       Policies:
         - PolicyName: KnowledgeBaseExecutionPermissions
           PolicyDocument:
@@ -80,14 +109,12 @@ Resources:
             Statement:
               - Effect: Allow
                 Action:
-                  - bedrock:InvokeModel
-                  - bedrock:Retrieve
-                  - bedrock:RetrieveAndGenerate
-                  - s3:GetObject
-                  - s3:ListBucket
+                  - 'bedrock:InvokeModel'
+                  - 'bedrock:Retrieve'
+                  - 'bedrock:RetrieveAndGenerate'
                 Resource: '*'
 
-  # Lambda Layer for Knowledge Base
+  # Lambda Layer for Knowledge Base Retrieval
   DeployKnowledgeBaseLambdaLayer:
     Type: AWS::Lambda::LayerVersion
     Properties:
@@ -95,39 +122,83 @@ Resources:
       Description: Knowledge Base Lambda Layer
       Content:
         S3Bucket: !Ref LambdaLayerS3BucketName
-        S3Key: !Ref LambdaLayerS3Key
+        S3Key: lambdalayer/knowledgebase_lambdalayer.zip
       CompatibleRuntimes:
         - python3.12
         - python3.11
         - python3.10
 
-  # Lambda Function to Create Knowledge Base
-  CreateKnowledgeBaseLambda:
-    Type: AWS::Lambda::Function
-    Properties:
-      FunctionName: CreateKnowledgeBase
-      Code:
-        S3Bucket: !Ref LambdaFunctionS3BucketName
-        S3Key: !Ref LambdaFunctionS3Key
-      Handler: index.lambda_handler
-      Role: !GetAtt LambdaExecutionRoleForKnowledgeBase.Arn
-      Runtime: python3.12
-      Timeout: 300
-
-  # Custom Resource to Create Knowledge Base
-  KnowledgeBase:
-    Type: Custom::Resource
-    Properties:
-      ServiceToken: !GetAtt CreateKnowledgeBaseLambda.Arn
-
-  # Lambda Function for Knowledge Base Operations
+  # Lambda Function for Knowledge Base Retrieval
   DeployKnowledgeBaseLambda:
     Type: AWS::Lambda::Function
     Properties:
       FunctionName: InvokeKnowledgeBase
       Code:
-        S3Bucket: !Ref LambdaFunctionS3BucketName
-        S3Key: !Ref LambdaFunctionS3Key
+        ZipFile: |
+          import os
+          import boto3
+          import random
+          import string
+
+          boto3_session = boto3.session.Session()
+          region = boto3_session.region_name
+
+          # create a boto3 bedrock client
+          bedrock_agent_runtime_client = boto3.client('bedrock-agent-runtime')
+
+          # get knowledge base id from environment variable
+          kb_id = os.environ.get("KNOWLEDGE_BASE_ID")
+          #print (kb_id)
+
+          # declare model id for calling RetrieveAndGenerate API
+          model_id = "anthropic.claude-3-sonnet-20240229-v1:0"
+          model_arn = f'arn:aws:bedrock:{region}::foundation-model/{model_id}'
+
+          def retrieveAndGenerate(input, kbId, model_arn, sessionId):
+              #print(input, kbId, model_arn, sessionId)
+              if sessionId != "":
+                  return bedrock_agent_runtime_client.retrieve_and_generate(
+                      input={
+                          'text': input
+                      },
+                      retrieveAndGenerateConfiguration={
+                          'type': 'KNOWLEDGE_BASE',
+                          'knowledgeBaseConfiguration': {
+                              'knowledgeBaseId': kbId,
+                              'modelArn': model_arn
+                          }
+                      },
+                      sessionId=sessionId
+                  )
+              else:
+                  return bedrock_agent_runtime_client.retrieve_and_generate(
+                      input={
+                          'text': input
+                      },
+                      retrieveAndGenerateConfiguration={
+                          'type': 'KNOWLEDGE_BASE',
+                          'knowledgeBaseConfiguration': {
+                              'knowledgeBaseId': kbId,
+                              'modelArn': model_arn
+                          }
+                      }
+                  )
+
+          def lambda_handler(event, context):
+              query = event["question"]
+              sessionId = event["sessionId"]
+              response = retrieveAndGenerate(query, kb_id, model_arn, sessionId)
+              generated_text = response['output']['text']
+              sessionId = response['sessionId']
+              citations = response['citations']
+              print (generated_text)
+              print (sessionId)
+              return {
+                  'statusCode': 200,
+                  'body': {"question": query.strip(), "answer": generated_text.strip(), "sessionId":sessionId, "citations":citations}
+              }
+              
+      Description: Lambda function to query the KnowledgeBase
       Handler: index.lambda_handler
       MemorySize: 256
       Role: !GetAtt LambdaExecutionRoleForKnowledgeBase.Arn
@@ -137,18 +208,15 @@ Resources:
         - !Ref DeployKnowledgeBaseLambdaLayer
       Environment:
         Variables:
-          KNOWLEDGE_BASE_ID: !GetAtt KnowledgeBase.PhysicalResourceId
+          KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseID
 
 Outputs:
-  BedrockExecutionRoleArn:
-    Description: ARN of the Bedrock Execution Role
-    Value: !GetAtt BedrockExecutionRole.Arn
-  InvokeKnowledgeBaseLambdaArn:
-    Description: ARN of the InvokeKnowledgeBase Lambda Function
-    Value: !GetAtt DeployKnowledgeBaseLambda.Arn
-  CreateKnowledgeBaseLambdaArn:
-    Description: ARN of the CreateKnowledgeBase Lambda Function
-    Value: !GetAtt CreateKnowledgeBaseLambda.Arn
+  OpenSearchServerlessCollectionArn:
+    Description: ARN of the OpenSearch Serverless collection
+    Value: !GetAtt OpenSearchServerlessCollection.Arn
   KnowledgeBaseID:
     Description: ID of the created Knowledge Base
-    Value: !GetAtt KnowledgeBase.PhysicalResourceId
+    Value: !Ref KnowledgeBaseWithAoss
+  RetrieveKnowledgeBaseLambdaArn:
+    Description: ARN of the RetrieveKnowledgeBase Lambda Function
+    Value: !GetAtt DeployKnowledgeBaseLambda.Arn
