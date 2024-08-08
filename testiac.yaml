@@ -23,10 +23,6 @@ Parameters:
   LambdaLayerS3BucketName:
     Type: String
     Description: The S3 bucket storing the Lambda layer code.
-  KnowledgeBaseID:
-    Type: String
-    Description: The Bedrock Knowledge base ID
-    Default: ''
 
 Resources:
   # IAM Role for Bedrock Knowledge Base
@@ -208,7 +204,7 @@ Resources:
         - !Ref DeployKnowledgeBaseLambdaLayer
       Environment:
         Variables:
-          KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseID
+          KNOWLEDGE_BASE_ID: !Ref KnowledgeBaseWithAoss
 
 Outputs:
   OpenSearchServerlessCollectionArn:
