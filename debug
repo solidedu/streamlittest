@@ -1,0 +1,83 @@
+import logging
+import sys
+
+# Set up logging
+logging.basicConfig(filename='/var/snap/amazon-ssm-agent/23/infer.log', level=logging.DEBUG, format='%(asctime)s %(message)s')
+
+class Dataset(torch.utils.data.Dataset):
+    def __init__(self, mappings, model_config, input_img_size, ROI=None, scaler=None, training=True):
+        self.mappings = mappings
+        self.inference = not isinstance(mappings, dict)
+        self.ROI = ROI
+        self.training = training
+        if self.inference:
+            self.image_paths = mappings
+            self.training = False
+        else:
+            self.image_paths = list(mappings.keys())
+
+        # Model configuration for input size and transformations
+        model_config['input_size'] = (3, input_img_size, input_img_size)
+        transforms_list = [Resize((input_img_size,input_img_size))]
+        if training:
+            transforms_list.extend([ColorJitter(brightness=(0.9, 1.2), contrast=(0.6, 1.4), saturation=(0.6, 1.4), hue=0),
+                                    RandomPerspective(distortion_scale=0.1)])        
+        transforms_list.extend([ToTensor(), Normalize(mean=model_config['mean'], std=model_config['std'])])
+        self.model_transforms = Compose(transforms_list)
+
+        # PIL to tensor conversion
+        self.to_pil = ToPILImage()
+
+        # Target scaling for training
+        if not self.inference:
+            targets = [mappings[path] for path in self.image_paths]
+            if not scaler:
+                logging.debug("Initializing StandardScaler for training")
+                self.scaler = StandardScaler()
+                self.targets_scaled = self.scaler.fit_transform(np.array(targets).reshape(-1, 1)).flatten()
+            else:
+                self.scaler = scaler
+                self.targets_scaled = self.scaler.transform(np.array(targets).reshape(-1, 1)).flatten()
+        else:
+            self.scaler = scaler
+
+        # Fallback for inference without scaler
+        if self.scaler is None and self.inference:
+            logging.warning("Scaler is None during inference! Using identity function.")
+            self.scaler = lambda x: x  # Identity function for inference
+        logging.debug(f"Scaler initialized: {self.scaler}")
+
+    def reverse_scale(self, iterable):
+        if torch.is_tensor(iterable):
+            iterable_np = iterable.numpy()
+        else:
+            iterable_np = np.array(iterable)
+
+        if self.scaler is None:
+            raise ValueError("Scaler has not been initialized.")
+
+        return self.scaler.inverse_transform(iterable_np.reshape(-1, 1)).flatten()
+
+###########################################
+
+# Log everything to a cron.log
+exec >> /var/snap/amazon-ssm-agent/23/cron.log 2>&1
+
+echo "Starting cronjob"
+
+. /var/snap/amazon-ssm-agent/23/venv/bin/activate
+
+echo "Environment activated"
+
+# Now execute your Python script
+python3 /var/snap/amazon-ssm-agent/3452345/infer.py --input_img_size 600 --model_path /var/snap/amazon-ssm-agent/trained_models/* --image_path  $DOWNLOAD_DIR
+
+echo "Cronjob finished"
+
+###########################################
+
+ls -l /var/snap/amazon-ssm-agent/trained_models/* 
+ls -l /var/snap/amazon-ssm-agent/23/files
+
+###########################################
+sudo -u <cron_user> /bin/bash /path/to/script.sh
