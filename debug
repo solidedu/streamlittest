@@ -1,180 +1,56 @@
-import logging
-import sys
-
-# Set up logging
-logging.basicConfig(filename='/var/snap/amazon-ssm-agent/23/infer.log', level=logging.DEBUG, format='%(asctime)s %(message)s')
-
-class Dataset(torch.utils.data.Dataset):
-    def __init__(self, mappings, model_config, input_img_size, ROI=None, scaler=None, training=True):
-        self.mappings = mappings
-        self.inference = not isinstance(mappings, dict)
-        self.ROI = ROI
-        self.training = training
-        if self.inference:
-            self.image_paths = mappings
-            self.training = False
-        else:
-            self.image_paths = list(mappings.keys())
-
-        # Model configuration for input size and transformations
-        model_config['input_size'] = (3, input_img_size, input_img_size)
-        transforms_list = [Resize((input_img_size,input_img_size))]
-        if training:
-            transforms_list.extend([ColorJitter(brightness=(0.9, 1.2), contrast=(0.6, 1.4), saturation=(0.6, 1.4), hue=0),
-                                    RandomPerspective(distortion_scale=0.1)])        
-        transforms_list.extend([ToTensor(), Normalize(mean=model_config['mean'], std=model_config['std'])])
-        self.model_transforms = Compose(transforms_list)
-
-        # PIL to tensor conversion
-        self.to_pil = ToPILImage()
-
-        # Target scaling for training
-        if not self.inference:
-            targets = [mappings[path] for path in self.image_paths]
-            if not scaler:
-                logging.debug("Initializing StandardScaler for training")
-                self.scaler = StandardScaler()
-                self.targets_scaled = self.scaler.fit_transform(np.array(targets).reshape(-1, 1)).flatten()
-            else:
-                self.scaler = scaler
-                self.targets_scaled = self.scaler.transform(np.array(targets).reshape(-1, 1)).flatten()
-        else:
-            self.scaler = scaler
-
-        # Fallback for inference without scaler
-        if self.scaler is None and self.inference:
-            logging.warning("Scaler is None during inference! Using identity function.")
-            self.scaler = lambda x: x  # Identity function for inference
-        logging.debug(f"Scaler initialized: {self.scaler}")
-
-    def reverse_scale(self, iterable):
-        if torch.is_tensor(iterable):
-            iterable_np = iterable.numpy()
-        else:
-            iterable_np = np.array(iterable)
-
-        if self.scaler is None:
-            raise ValueError("Scaler has not been initialized.")
-
-        return self.scaler.inverse_transform(iterable_np.reshape(-1, 1)).flatten()
-
-###########################################
-
-# Log everything to a cron.log
-exec >> /var/snap/amazon-ssm-agent/23/cron.log 2>&1
-
-echo "Starting cronjob"
-
-. /var/snap/amazon-ssm-agent/23/venv/bin/activate
-
-echo "Environment activated"
-
-# Now execute your Python script
-python3 /var/snap/amazon-ssm-agent/3452345/infer.py --input_img_size 600 --model_path /var/snap/amazon-ssm-agent/trained_models/* --image_path  $DOWNLOAD_DIR
-
-echo "Cronjob finished"
-
-###########################################
-
-ls -l /var/snap/amazon-ssm-agent/trained_models/* 
-ls -l /var/snap/amazon-ssm-agent/23/files
-
-###########################################
-sudo -u <cron_user> /bin/bash /path/to/script.sh
-
-
-
-
-
-=============================================
 #!/bin/bash
+# Activate the virtual environment
 . /var/snap/amazon-ssm-agent/23/venv/bin/activate
 
+# Define the bucket name, prefix, and download directory
 BUCKET_NAME="datav"
 PREFIX="fasdfsdfasdf/sdfhg"
 DOWNLOAD_DIR="/var/snap/amazon-ssm-agent/23/files"
 
-# Clean up download directory before new run
-rm -rf $DOWNLOAD_DIR/*
-mkdir -p $DOWNLOAD_DIR
+# Ensure the DOWNLOAD_DIR is set and valid
+if [ -z "$DOWNLOAD_DIR" ]; then
+    echo "Error: DOWNLOAD_DIR is not set."
+    exit 1
+elif [ ! -d "$DOWNLOAD_DIR" ]; then
+    echo "DOWNLOAD_DIR does not exist. Creating the directory..."
+    mkdir -p "$DOWNLOAD_DIR"
+    if [ $? -ne 0 ]; then
+        echo "Error: Failed to create DOWNLOAD_DIR."
+        exit 1
+    fi
+fi
 
-# List only the latest object in the S3 bucket
+# Clean up download directory by removing all files
+rm -rf "$DOWNLOAD_DIR"/*
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to clean up DOWNLOAD_DIR."
+    exit 1
+fi
+
+# List and download the latest file from S3
 latest_file_info=$(/usr/local/bin/aws s3api list-objects-v2 \
     --bucket $BUCKET_NAME --prefix $PREFIX \
-    --query 'Contents | sort_by(@, &LastModified)[-1]' \
-    --output text --query '[Key, LastModified]')
+    --query 'Contents | sort_by(@, &LastModified)[-1].{Key: Key, LastModified: LastModified}' \
+    --output text)
 
-# Extract the key and timestamp from the latest file info
+# Extract the key and timestamp
 key=$(echo $latest_file_info | awk '{print $1}')
 timestamp=$(echo $latest_file_info | awk '{print $2 " " $3}')
 
-# Download the latest file
-/usr/local/bin/aws s3 cp "s3://$BUCKET_NAME/$key" "$DOWNLOAD_DIR"
-
-# Save the file path and its timestamp
-echo "$DOWNLOAD_DIR/$(basename $key) $timestamp" > latest_downloaded_file_with_timestamp.txt
-
-# Run the Python script to generate predictions
-python3 /var/snap/amazon-ssm-agent/3452345/infer.py --input_img_size 600 --model_path /var/snap/amazon-ssm-agent/trained_models/* --image_path "$DOWNLOAD_DIR"
-
-
-
-
-
-
-===============================================
-import pandas as pd
-from datetime import datetime
-import pytz
-import os
-
-# Function to convert S3 UTC time to EST
-def convert_to_est(s3_time):
-    utc_time = datetime.strptime(s3_time, '%Y-%m-%dT%H:%M:%S.%fZ')
-    est = pytz.timezone('US/Eastern')
-    return utc_time.astimezone(est).strftime('%Y-%m-%d %H:%M:%S')
-
-# Load S3 timestamp for the latest downloaded file
-with open('/var/snap/amazon-ssm-agent/23/latest_downloaded_file_with_timestamp.txt', 'r') as f:
-    file_path, s3_time = f.strip().split(maxsplit=1)
-    est_timestamp = convert_to_est(s3_time)
-
-# Existing code that generates predictions and filepaths
-predictions = []
-filepaths = []
-timestamps = []  # New list to store S3 timestamps
-
-model.eval()
-with torch.no_grad():
-    # Perform inference on the single image
-    images = read_image(file_path).float().to(device)
-    
-    # Perform inference
-    outputs = model(images).clone().detach().cpu()
-    outputs = inference_dataset.reverse_scale(outputs)
-    
-    # Store predictions, filepaths, and the S3 timestamp for the file
-    predictions.append(outputs)
-    filepaths.append(file_path)
-    timestamps.append(est_timestamp)
-
-# Save the predictions, filepaths, and timestamps as a DataFrame
-df = pd.DataFrame({
-    'Filepath': filepaths, 
-    'Prediction': predictions,
-    'Timestamp': timestamps  # Add the S3 Timestamp column
-})
-
-# Save the DataFrame as a CSV file
-df.to_csv('inference_predictions.csv', index=False)
-
-#######################
-
-# Check that $DOWNLOAD_DIR is not empty and it points to a valid directory
-if [ -n "$DOWNLOAD_DIR" ] && [ -d "$DOWNLOAD_DIR" ]; then
-    # Remove files inside the directory without removing the directory itself
-    rm -rf "$DOWNLOAD_DIR"/*
-else
-    echo "Error: DOWNLOAD_DIR is not set or does not exist"
+# Check if the key was retrieved
+if [ -z "$key" ]; then
+    echo "Error: No files found in the bucket with the given prefix."
     exit 1
 fi
+
+# Download the latest file to the download directory
+/usr/local/bin/aws s3 cp "s3://$BUCKET_NAME/$key" "$DOWNLOAD_DIR"
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to download the latest file from S3."
+    exit 1
+fi
+
+# Log the downloaded file and timestamp
+echo "$DOWNLOAD_DIR/$(basename $key) $timestamp" > latest_downloaded_file_with_timestamp.txt
+
+echo "Latest file downloaded successfully: $key"
