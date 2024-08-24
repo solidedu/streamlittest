@@ -81,3 +81,39 @@ ls -l /var/snap/amazon-ssm-agent/23/files
 
 ###########################################
 sudo -u <cron_user> /bin/bash /path/to/script.sh
+
+
+
+
+
+=============================================
+#!/bin/bash
+. /var/snap/amazon-ssm-agent/23/venv/bin/activate
+
+BUCKET_NAME="datav"
+PREFIX="fasdfsdfasdf/sdfhg"
+DOWNLOAD_DIR="/var/snap/amazon-ssm-agent/23/files"
+
+# Clean up download directory before new run
+rm -rf $DOWNLOAD_DIR/*
+mkdir -p $DOWNLOAD_DIR
+
+# List only the latest object in the S3 bucket
+latest_file_info=$(/usr/local/bin/aws s3api list-objects-v2 \
+    --bucket $BUCKET_NAME --prefix $PREFIX \
+    --query 'Contents | sort_by(@, &LastModified)[-1]' \
+    --output text --query '[Key, LastModified]')
+
+# Extract the key and timestamp from the latest file info
+key=$(echo $latest_file_info | awk '{print $1}')
+timestamp=$(echo $latest_file_info | awk '{print $2 " " $3}')
+
+# Download the latest file
+/usr/local/bin/aws s3 cp "s3://$BUCKET_NAME/$key" "$DOWNLOAD_DIR"
+
+# Save the file path and its timestamp
+echo "$DOWNLOAD_DIR/$(basename $key) $timestamp" > latest_downloaded_file_with_timestamp.txt
+
+# Run the Python script to generate predictions
+python3 /var/snap/amazon-ssm-agent/3452345/infer.py --input_img_size 600 --model_path /var/snap/amazon-ssm-agent/trained_models/* --image_path "$DOWNLOAD_DIR"
+
