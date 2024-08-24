@@ -99,6 +99,54 @@ df.to_csv('inference_predictions.csv', index=False)
 
 
 =============
+
+#!/bin/bash
+
+# Define your bucket name, prefix, and download directory
+BUCKET_NAME="datav"
+PREFIX="fasdfsdfasdf/sdfhg"
+DOWNLOAD_DIR="/var/snap/amazon-ssm-agent/23/files"
+
+# Ensure the download directory exists
+mkdir -p "$DOWNLOAD_DIR"
+
+# Clean up download directory by removing all files
+rm -rf "$DOWNLOAD_DIR"/*
+
+# Get the latest object from S3
+latest_file_info=$(/usr/local/bin/aws s3api list-objects-v2 \
+    --bucket $BUCKET_NAME --prefix $PREFIX \
+    --query 'Contents | sort_by(@, &LastModified)[-1].{Key: Key, LastModified: LastModified}' \
+    --output json)
+
+# Extract the key and last modified timestamp
+key=$(echo "$latest_file_info" | jq -r '.Key')
+timestamp=$(echo "$latest_file_info" | jq -r '.LastModified')
+
+# Check if the key was retrieved
+if [ -z "$key" ] || [ "$key" == "None" ]; then
+    echo "Error: No valid key found."
+    exit 1
+fi
+
+# Download the latest file to the download directory
+/usr/local/bin/aws s3 cp "s3://$BUCKET_NAME/$key" "$DOWNLOAD_DIR"
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to download the latest file from S3."
+    exit 1
+fi
+
+# Log the downloaded file path and its timestamp for the inference script
+echo "$DOWNLOAD_DIR/$(basename $key) $timestamp" > latest_downloaded_file_with_timestamp.txt
+
+echo "Latest file downloaded successfully: $key"
+
+
+
+
+
+
+
 # First, append the header only if the predictions.csv file does not exist
 if [ ! -f predictions.csv ]; then
     head -n 1 inference_predictions.csv > predictions.csv
