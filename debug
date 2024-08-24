@@ -117,3 +117,54 @@ echo "$DOWNLOAD_DIR/$(basename $key) $timestamp" > latest_downloaded_file_with_t
 # Run the Python script to generate predictions
 python3 /var/snap/amazon-ssm-agent/3452345/infer.py --input_img_size 600 --model_path /var/snap/amazon-ssm-agent/trained_models/* --image_path "$DOWNLOAD_DIR"
 
+
+
+
+
+
+===============================================
+import pandas as pd
+from datetime import datetime
+import pytz
+import os
+
+# Function to convert S3 UTC time to EST
+def convert_to_est(s3_time):
+    utc_time = datetime.strptime(s3_time, '%Y-%m-%dT%H:%M:%S.%fZ')
+    est = pytz.timezone('US/Eastern')
+    return utc_time.astimezone(est).strftime('%Y-%m-%d %H:%M:%S')
+
+# Load S3 timestamp for the latest downloaded file
+with open('/var/snap/amazon-ssm-agent/23/latest_downloaded_file_with_timestamp.txt', 'r') as f:
+    file_path, s3_time = f.strip().split(maxsplit=1)
+    est_timestamp = convert_to_est(s3_time)
+
+# Existing code that generates predictions and filepaths
+predictions = []
+filepaths = []
+timestamps = []  # New list to store S3 timestamps
+
+model.eval()
+with torch.no_grad():
+    # Perform inference on the single image
+    images = read_image(file_path).float().to(device)
+    
+    # Perform inference
+    outputs = model(images).clone().detach().cpu()
+    outputs = inference_dataset.reverse_scale(outputs)
+    
+    # Store predictions, filepaths, and the S3 timestamp for the file
+    predictions.append(outputs)
+    filepaths.append(file_path)
+    timestamps.append(est_timestamp)
+
+# Save the predictions, filepaths, and timestamps as a DataFrame
+df = pd.DataFrame({
+    'Filepath': filepaths, 
+    'Prediction': predictions,
+    'Timestamp': timestamps  # Add the S3 Timestamp column
+})
+
+# Save the DataFrame as a CSV file
+df.to_csv('inference_predictions.csv', index=False)
+
