@@ -1,49 +1,37 @@
 #!/bin/bash
-# Activate the virtual environment
-. /var/snap/amazon-ssm-agent/23/venv/bin/activate
 
-# Define the bucket name, prefix, and download directory
+# Define your bucket name, prefix, and download directory
 BUCKET_NAME="datav"
 PREFIX="fasdfsdfasdf/sdfhg"
 DOWNLOAD_DIR="/var/snap/amazon-ssm-agent/23/files"
 
-# Ensure the DOWNLOAD_DIR is set and valid
-if [ -z "$DOWNLOAD_DIR" ]; then
-    echo "Error: DOWNLOAD_DIR is not set."
-    exit 1
-elif [ ! -d "$DOWNLOAD_DIR" ]; then
-    echo "DOWNLOAD_DIR does not exist. Creating the directory..."
-    mkdir -p "$DOWNLOAD_DIR"
-    if [ $? -ne 0 ]; then
-        echo "Error: Failed to create DOWNLOAD_DIR."
-        exit 1
-    fi
-fi
+# Ensure the download directory exists
+mkdir -p "$DOWNLOAD_DIR"
 
-# Clean up download directory by removing all files
-rm -rf "$DOWNLOAD_DIR"/*
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to clean up DOWNLOAD_DIR."
-    exit 1
-fi
-
-# List and download the latest file from S3
+# Get the latest file information from S3
 latest_file_info=$(/usr/local/bin/aws s3api list-objects-v2 \
     --bucket $BUCKET_NAME --prefix $PREFIX \
     --query 'Contents | sort_by(@, &LastModified)[-1].{Key: Key, LastModified: LastModified}' \
-    --output text)
+    --output json)
 
-# Extract the key and timestamp
-key=$(echo $latest_file_info | awk '{print $1}')
-timestamp=$(echo $latest_file_info | awk '{print $2 " " $3}')
+# Debug: Print the raw output to check what is returned
+echo "Raw output from S3 query: $latest_file_info"
 
-# Check if the key was retrieved
-if [ -z "$key" ]; then
-    echo "Error: No files found in the bucket with the given prefix."
+# Parse the key and timestamp from the JSON output
+key=$(echo "$latest_file_info" | jq -r '.Key')
+timestamp=$(echo "$latest_file_info" | jq -r '.LastModified')
+
+# Debug: Print parsed values
+echo "Parsed Key: $key"
+echo "Parsed LastModified: $timestamp"
+
+# Check if the key is empty or None
+if [ -z "$key" ] || [ "$key" == "None" ]; then
+    echo "Error: No valid key found."
     exit 1
 fi
 
-# Download the latest file to the download directory
+# Download the latest file from S3
 /usr/local/bin/aws s3 cp "s3://$BUCKET_NAME/$key" "$DOWNLOAD_DIR"
 if [ $? -ne 0 ]; then
     echo "Error: Failed to download the latest file from S3."
@@ -52,5 +40,4 @@ fi
 
 # Log the downloaded file and timestamp
 echo "$DOWNLOAD_DIR/$(basename $key) $timestamp" > latest_downloaded_file_with_timestamp.txt
-
 echo "Latest file downloaded successfully: $key"
