@@ -1,0 +1,83 @@
+#!/bin/bash
+. /var/snap/amazon-ssm-agent/23/venv/bin/activate
+
+BUCKET_NAME="datav"
+PREFIX="fasdfsdfasdf/sdfhg"
+DOWNLOAD_DIR="/var/snap/amazon-ssm-agent/23/files"
+
+# Clean up download directory before new run
+rm -rf $DOWNLOAD_DIR/*
+mkdir -p $DOWNLOAD_DIR
+
+# List objects and capture LastModified date and file Key
+/usr/local/bin/aws s3api list-objects-v2 \
+    --bucket $BUCKET_NAME --prefix $PREFIX \
+    --query 'Contents[].{Key: Key, LastModified: LastModified}' \
+    --output text > files_to_download_with_timestamps.txt
+
+# Download files and save their timestamps
+while read -r key timestamp; do
+    # Download the file
+    /usr/local/bin/aws s3 cp "s3://$BUCKET_NAME/$key" "$DOWNLOAD_DIR"
+
+    # Save the file path and its timestamp
+    echo "$DOWNLOAD_DIR/$(basename $key) $timestamp" >> downloaded_files_with_timestamps.txt
+done < files_to_download_with_timestamps.txt
+
+
+========================
+
+import pandas as pd
+from datetime import datetime
+import pytz
+import os
+
+# Function to convert S3 UTC time to EST
+def convert_to_est(s3_time):
+    # Convert the S3 time (assuming it comes in as UTC)
+    utc_time = datetime.strptime(s3_time, '%Y-%m-%dT%H:%M:%S.%fZ')
+    est = pytz.timezone('US/Eastern')
+    return utc_time.astimezone(est).strftime('%Y-%m-%d %H:%M:%S')
+
+# Load S3 timestamps from the text file
+s3_timestamps = {}
+with open('/var/snap/amazon-ssm-agent/23/downloaded_files_with_timestamps.txt', 'r') as f:
+    for line in f:
+        file_path, s3_time = line.strip().split(maxsplit=1)
+        s3_timestamps[file_path] = convert_to_est(s3_time)
+
+# Existing code that generates predictions and filepaths
+predictions = []
+filepaths = []
+timestamps = []  # New list to store S3 timestamps
+
+model.eval()
+with torch.no_grad():
+    for i, (images, _) in tqdm(enumerate(dataloader), total=len(dataloader)):
+        images = images.float().to(device)
+        
+        # Perform inference
+        outputs = model(images).clone().detach().cpu()
+        outputs = inference_dataset.reverse_scale(outputs)
+        
+        # Store predictions, filepaths, and the S3 timestamp for each file
+        for filepath in inference_dataset.image_paths[i*batch_size:(i+1)*batch_size]:
+            predictions.append(outputs)
+            filepaths.append(filepath)
+            # Get the timestamp from the downloaded files map
+            est_timestamp = s3_timestamps.get(filepath, "Unknown Timestamp")
+            timestamps.append(est_timestamp)
+
+# Save the predictions, filepaths, and timestamps as a DataFrame
+df = pd.DataFrame({
+    'Filepath': filepaths, 
+    'Prediction': predictions,
+    'Timestamp': timestamps  # Add the S3 Timestamp column
+})
+
+# Save the DataFrame as a CSV file
+df.to_csv('inference_predictions.csv', index=False)
+
+
+
+
