@@ -98,3 +98,11 @@ df = pd.DataFrame({
 df.to_csv('inference_predictions.csv', index=False)
 
 
+=============
+# First, append the header only if the predictions.csv file does not exist
+if [ ! -f predictions.csv ]; then
+    head -n 1 inference_predictions.csv > predictions.csv
+fi
+
+# Then, append the data from inference_predictions.csv, skipping the header
+tail -n +2 inference_predictions.csv >> predictions.csv
