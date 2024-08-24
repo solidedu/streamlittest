@@ -168,3 +168,13 @@ df = pd.DataFrame({
 # Save the DataFrame as a CSV file
 df.to_csv('inference_predictions.csv', index=False)
 
+#######################
+
+# Check that $DOWNLOAD_DIR is not empty and it points to a valid directory
+if [ -n "$DOWNLOAD_DIR" ] && [ -d "$DOWNLOAD_DIR" ]; then
+    # Remove files inside the directory without removing the directory itself
+    rm -rf "$DOWNLOAD_DIR"/*
+else
+    echo "Error: DOWNLOAD_DIR is not set or does not exist"
+    exit 1
+fi
