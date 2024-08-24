@@ -46,12 +46,12 @@ echo "Latest file downloaded successfully: $key"
 
 
 
-
-
 import pandas as pd
 from datetime import datetime
 import pytz
 import os
+import torch
+from torchvision.io import read_image
 
 # Function to convert S3 UTC time to EST
 def convert_to_est(s3_time):
@@ -71,7 +71,7 @@ est_timestamp = convert_to_est(s3_time)
 # Initialize lists for predictions and corresponding metadata
 predictions = []
 filepaths = []
-timestamps = []  # New list to store individual S3 timestamps
+timestamps = []  # List to store individual S3 timestamps
 
 model.eval()
 with torch.no_grad():
@@ -83,7 +83,7 @@ with torch.no_grad():
     outputs = inference_dataset.reverse_scale(outputs)
     
     # Store predictions, filepaths, and the S3 timestamp for each prediction
-    predictions.append(outputs)
+    predictions.append(outputs.item())  # Append the single prediction
     filepaths.append(file_path)
     timestamps.append(est_timestamp)  # Assign the unique timestamp for the file
 
@@ -96,4 +96,5 @@ df = pd.DataFrame({
 
 # Save the DataFrame as a CSV file
 df.to_csv('inference_predictions.csv', index=False)
+
 
