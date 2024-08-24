@@ -1,43 +1,50 @@
-#!/bin/bash
+import pandas as pd
+from datetime import datetime
+import pytz
+import os
 
-# Define your bucket name, prefix, and download directory
-BUCKET_NAME="datav"
-PREFIX="fasdfsdfasdf/sdfhg"
-DOWNLOAD_DIR="/var/snap/amazon-ssm-agent/23/files"
+# Function to convert S3 UTC time to EST
+def convert_to_est(s3_time):
+    utc_time = datetime.strptime(s3_time, '%Y-%m-%dT%H:%M:%S.%fZ')
+    est = pytz.timezone('US/Eastern')
+    return utc_time.astimezone(est).strftime('%Y-%m-%d %H:%M:%S')
 
-# Ensure the download directory exists
-mkdir -p "$DOWNLOAD_DIR"
+# Load S3 timestamp for the latest downloaded file
+with open('/var/snap/amazon-ssm-agent/23/latest_downloaded_file_with_timestamp.txt', 'r') as f:
+    # Read the first line of the file
+    line = f.readline().strip()  # Read and strip any extra spaces or newlines
 
-# Get the latest file information from S3
-latest_file_info=$(/usr/local/bin/aws s3api list-objects-v2 \
-    --bucket $BUCKET_NAME --prefix $PREFIX \
-    --query 'Contents | sort_by(@, &LastModified)[-1].{Key: Key, LastModified: LastModified}' \
-    --output json)
+    # Now split the line into file_path and s3_time
+    file_path, s3_time = line.split(maxsplit=1)
 
-# Debug: Print the raw output to check what is returned
-echo "Raw output from S3 query: $latest_file_info"
+# Convert the S3 timestamp to EST
+est_timestamp = convert_to_est(s3_time)
 
-# Parse the key and timestamp from the JSON output
-key=$(echo "$latest_file_info" | jq -r '.Key')
-timestamp=$(echo "$latest_file_info" | jq -r '.LastModified')
+# Existing code that generates predictions and filepaths
+predictions = []
+filepaths = []
+timestamps = []  # New list to store S3 timestamps
 
-# Debug: Print parsed values
-echo "Parsed Key: $key"
-echo "Parsed LastModified: $timestamp"
+model.eval()
+with torch.no_grad():
+    # Perform inference on the single image
+    images = read_image(file_path).float().to(device)
+    
+    # Perform inference
+    outputs = model(images).clone().detach().cpu()
+    outputs = inference_dataset.reverse_scale(outputs)
+    
+    # Store predictions, filepaths, and the S3 timestamp for the file
+    predictions.append(outputs)
+    filepaths.append(file_path)
+    timestamps.append(est_timestamp)
 
-# Check if the key is empty or None
-if [ -z "$key" ] || [ "$key" == "None" ]; then
-    echo "Error: No valid key found."
-    exit 1
-fi
+# Save the predictions, filepaths, and timestamps as a DataFrame
+df = pd.DataFrame({
+    'Filepath': filepaths, 
+    'Prediction': predictions,
+    'Timestamp': timestamps  # Add the S3 Timestamp column
+})
 
-# Download the latest file from S3
-/usr/local/bin/aws s3 cp "s3://$BUCKET_NAME/$key" "$DOWNLOAD_DIR"
-if [ $? -ne 0 ]; then
-    echo "Error: Failed to download the latest file from S3."
-    exit 1
-fi
-
-# Log the downloaded file and timestamp
-echo "$DOWNLOAD_DIR/$(basename $key) $timestamp" > latest_downloaded_file_with_timestamp.txt
-echo "Latest file downloaded successfully: $key"
+# Save the DataFrame as a CSV file
+df.to_csv('inference_predictions.csv', index=False)
