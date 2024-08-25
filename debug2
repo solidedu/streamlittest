@@ -1,0 +1,116 @@
+#!/bin/bash
+
+# Define your bucket name, prefix, and download directory
+BUCKET_NAME="datav"
+PREFIX="fasdfsdfasdf/sdfhg"
+DOWNLOAD_DIR="/var/snap/amazon-ssm-agent/23/files"
+LAST_TIMESTAMP_FILE="/var/snap/amazon-ssm-agent/23/last_processed_timestamp.txt"
+
+# Ensure the download directory exists
+mkdir -p "$DOWNLOAD_DIR"
+
+# Clean up download directory by removing all files (to avoid overlap)
+rm -rf "$DOWNLOAD_DIR"/*
+
+# Get the latest object from S3
+latest_file_info=$(/usr/local/bin/aws s3api list-objects-v2 \
+    --bucket $BUCKET_NAME --prefix $PREFIX \
+    --query 'Contents | sort_by(@, &LastModified)[-1].{Key: Key, LastModified: LastModified}' \
+    --output json)
+
+# Extract the key and last modified timestamp from S3
+key=$(echo "$latest_file_info" | jq -r '.Key')
+s3_timestamp=$(echo "$latest_file_info" | jq -r '.LastModified')
+
+# Get the current system time (Linux time) in ISO 8601 format
+linux_timestamp=$(date -u +"%Y-%m-%dT%H:%M:%S.%3NZ")
+
+# Debugging: Log the raw S3 and Linux timestamps for verification
+echo "Latest file key: $key"
+echo "S3 Last modified time: $s3_timestamp"
+echo "Current Linux time: $linux_timestamp"
+
+# Check if the key was retrieved and it's not empty
+if [ -z "$key" ] || [ "$key" == "None" ]; then
+    echo "Error: No valid key found."
+    exit 1
+fi
+
+# Read the last processed timestamp to avoid reprocessing the same file
+if [ -f "$LAST_TIMESTAMP_FILE" ]; then
+    last_timestamp=$(cat "$LAST_TIMESTAMP_FILE")
+else
+    last_timestamp=""
+fi
+
+# Compare the latest S3 timestamp with the last processed one
+if [ "$s3_timestamp" = "$last_timestamp" ]; then
+    echo "No new file to process. Exiting."
+    exit 0
+fi
+
+# Download the latest file to the download directory
+/usr/local/bin/aws s3 cp "s3://$BUCKET_NAME/$key" "$DOWNLOAD_DIR"
+if [ $? -ne 0 ]; then
+    echo "Error: Failed to download the latest file from S3."
+    exit 1
+fi
+
+# Log the downloaded file path, S3 timestamp, and the current system time for the inference script
+echo "$DOWNLOAD_DIR/$(basename $key) $s3_timestamp $linux_timestamp" > latest_downloaded_file_with_timestamps.txt
+
+# Save the latest S3 timestamp to prevent reprocessing the same file in the future
+echo "$s3_timestamp" > "$LAST_TIMESTAMP_FILE"
+
+echo "File downloaded and timestamps logged successfully: $key"
+
+
+
+===========================
+
+import pandas as pd
+import os
+import torch
+from torchvision.io import read_image
+
+# File containing the path, S3 timestamp, and Linux timestamp
+timestamps_file = '/var/snap/amazon-ssm-agent/23/latest_downloaded_file_with_timestamps.txt'
+
+# Load the file path, S3 timestamp, and Linux system time for the latest downloaded file
+with open(timestamps_file, 'r') as f:
+    line = f.readline().strip()
+    file_path, s3_time, linux_time = line.split(maxsplit=2)
+
+# Initialize lists for predictions and corresponding metadata
+predictions = []
+filepaths = []
+s3_timestamps = []
+linux_timestamps = []
+
+model.eval()
+with torch.no_grad():
+    # Perform inference on the single image
+    images = read_image(file_path).float().to(device)
+    
+    # Perform inference
+    outputs = model(images).clone().detach().cpu()
+    outputs = inference_dataset.reverse_scale(outputs)
+    
+    # Store predictions, file paths, S3 timestamp, and Linux timestamp
+    predictions.append(outputs.item())
+    filepaths.append(file_path)
+    s3_timestamps.append(s3_time)
+    linux_timestamps.append(linux_time)
+
+# Save the predictions, file paths, S3 timestamps, and Linux timestamps as a DataFrame
+df = pd.DataFrame({
+    'Filepath': filepaths, 
+    'Prediction': predictions,
+    'S3 Timestamp': s3_timestamps,
+    'Linux Timestamp': linux_timestamps
+})
+
+# Save the DataFrame as a CSV file
+df.to_csv('inference_predictions.csv', index=False)
+
+print("Inference completed and saved to CSV.")
