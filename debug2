@@ -114,3 +114,23 @@ df = pd.DataFrame({
 df.to_csv('inference_predictions.csv', index=False)
 
 print("Inference completed and saved to CSV.")
+
+
+
+
+
+
+
+
+==================
+# Get the current system time (Linux time) in UTC
+utc_time = datetime.utcnow()
+
+# Convert UTC time to EST
+utc = pytz.utc
+est = pytz.timezone('US/Eastern')
+utc_time = utc.localize(utc_time)  # Make the naive datetime timezone-aware (UTC)
+est_time = utc_time.astimezone(est)  # Convert to EST
+
+# Format the EST time as a string in ISO 8601 format
+est_time_str = est_time.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
